@@ -8,6 +8,7 @@ import sqlite3
 import socket
 import struct
 import pickle
+import numpy as np
 from PIL import Image, ImageTk
 from pathlib import Path
 
@@ -114,78 +115,76 @@ user = get_user('user123')
 
 """network section"""
 
-def send_video():
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect(('localhost', 9999))
-    connection = client_socket.makefile('wb')
+def send_image(socket_connection, frame):
+    data = pickle.dumps(frame)
+    message_size = struct.pack("L", len(data))
+    socket_connection.sendall(b"%IMAG" + message_size + data)
 
-    cap = cv2.VideoCapture(0)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        data = pickle.dumps(frame)
-        message_size = struct.pack("L", len(data))  # 데이터의 크기를 네트워크 바이트 순서로 패킹
-
-        connection.write(message_size + data)
-        connection.flush()
-
-    cap.release()
-    connection.close()
-    client_socket.close()
-
-def receive_video():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind(('0.0.0.0', 9999))
-    server_socket.listen(1)
-    print('서버가 시작되었습니다.')
-
-    conn, addr = server_socket.accept()
-    print(f'{addr}와 연결되었습니다.')
-
+def receive_video(socket_connection):
     data = b""
-    payload_size = struct.calcsize("L")  # "L"은 데이터의 크기를 나타냄
+    payload_size = struct.calcsize("L")
 
     while True:
         while len(data) < payload_size:
-            packet = conn.recv(4096)
+            packet = socket_connection.recv(4096)
             if not packet:
-                break
+                return
             data += packet
-
-        if not packet:
-            break
 
         packed_msg_size = data[:payload_size]
         data = data[payload_size:]
         msg_size = struct.unpack("L", packed_msg_size)[0]
 
         while len(data) < msg_size:
-            data += conn.recv(4096)
+            data += socket_connection.recv(4096)
 
         frame_data = data[:msg_size]
         data = data[msg_size:]
 
         frame = pickle.loads(frame_data)
-        cv2.imshow('Video', frame)
-
+        cv2.imshow('Received', frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    conn.close()
-    server_socket.close()
+    socket_connection.close()
     cv2.destroyAllWindows()
 
-if __name__ == '__main__':
-    pass
-    #receive_video()
 
-if __name__ == '__main__':
-    pass
-    #send_video()
-    # 
+def receive_image(socket_connection):
+    payload_size = struct.calcsize("L")
+
+    packed_msg_size = socket_connection.recv(payload_size)
+    if not packed_msg_size:
+        return None
+
+    msg_size = struct.unpack("L", packed_msg_size)[0]
+
+    data = b""
+    while len(data) < msg_size:
+        packet = socket_connection.recv(4096)
+        if not packet:
+            return None
+        data += packet
+
+    frame_data = data[:msg_size]
+    frame = pickle.loads(frame_data)
+    return frame
+
+def send_control_message(socket_connection, message):
+    if message in ["%OPEN", "%CLOSE", "%RAND"]:
+        socket_connection.sendall(message.encode())
+    else:
+        raise ValueError("Invalid control message. Use '%OPEN', '%CLOSE', or '%RAND'")
+
+def receive_control_message(socket_connection):
+    message_type = socket_connection.recv(4)
+    if message_type in [b"%OPEN", b"%CLOS", b"%RAND"]:
+        return message_type.decode()
+    elif message_type == b"%IMAG":
+        return "%IMAG"
+    else:
+        return None
+    
 """opencv section"""
 
 face_classifier_path = './haarcascade_frontalface_default.xml'
@@ -200,8 +199,24 @@ def face_extractor(img):
         cropped_face = img[y:y+h, x:x+w]
     return cropped_face
 
+def preprocess_image(face):
+    face = cv2.resize(face, (300, 300))
+    face = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+    _, face = cv2.threshold(face, 100, 255, cv2.THRESH_BINARY)
+    kernel = np.ones((1, 1), np.uint8)
+    face = cv2.erode(face, kernel, iterations=10)
+    return face
 
 """window section"""
+
+def generate_pin():
+    return random.randint(1000, 9999)
+
+def copy_to_clipboard(text):
+    global windoww
+    window.clipboard_clear()  # Clear the clipboard
+    window.clipboard_append(text)  # Append the text to the clipboard
+
 now_id = None
 window = Tk()
 
@@ -974,6 +989,9 @@ def turn_window(window_id : int):
         OUTPUT_PATH = Path(__file__).parent
         ASSETS_PATH = OUTPUT_PATH / Path("./assets/frame14/")
 
+
+        def is_open():
+            pass
         
         canvas = Canvas(
             window,
@@ -1384,7 +1402,7 @@ def turn_window(window_id : int):
             image=button_image_20,
             borderwidth=0,
             highlightthickness=0,
-            command=lambda: print("button_20 clicked"),
+            command=lambda: turn_window(8),
             relief="flat"
         )
         button_20.place(
@@ -1581,6 +1599,414 @@ def turn_window(window_id : int):
         cap = cv2.VideoCapture(0)
         update_frame()
 
+    elif window_id == 8:
+        def gen_random_password():
+            copy_to_clipboard(generate_pin())
+            msgbox.showinfo("확인", "클립보드에 임시 비밀번호가 저장되었습니다.")
+        OUTPUT_PATH = Path(__file__).parent
+        ASSETS_PATH = OUTPUT_PATH / Path("./assets/frame8/")
+        
+        canvas = Canvas(
+            window,
+            bg = "#181A20",
+            height = 852,
+            width = 393,
+            bd = 0,
+            highlightthickness = 0,
+            relief = "ridge"
+        )
+
+        canvas.place(x = 0, y = 0)
+        image_image_1 = PhotoImage(
+            file=relative_to_assets("image_1.png"))
+        image_1 = canvas.create_image(
+            196.0,
+            835.0,
+            image=image_image_1
+        )
+
+        button_image_1 = PhotoImage(
+            file=relative_to_assets("button_1.png"))
+        button_1 = Button(
+            image=button_image_1,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: gen_random_password(),
+            relief="flat"
+        )
+        button_1.place(
+            x=34.0,
+            y=752.0,
+            width=326.0,
+            height=60.0
+        )
+
+        image_image_2 = PhotoImage(
+            file=relative_to_assets("image_2.png"))
+        image_2 = canvas.create_image(
+            200.0,
+            345.0,
+            image=image_image_2
+        )
+
+        image_image_3 = PhotoImage(
+            file=relative_to_assets("image_3.png"))
+        image_3 = canvas.create_image(
+            72.0,
+            244.0,
+            image=image_image_3
+        )
+
+        image_image_4 = PhotoImage(
+            file=relative_to_assets("image_4.png"))
+        image_4 = canvas.create_image(
+            157.0,
+            244.0,
+            image=image_image_4
+        )
+
+        image_image_5 = PhotoImage(
+            file=relative_to_assets("image_5.png"))
+        image_5 = canvas.create_image(
+            242.0,
+            244.0,
+            image=image_image_5
+        )
+
+        image_image_6 = PhotoImage(
+            file=relative_to_assets("image_6.png"))
+        image_6 = canvas.create_image(
+            327.0,
+            244.0,
+            image=image_image_6
+        )
+
+        image_image_7 = PhotoImage(
+            file=relative_to_assets("image_7.png"))
+        image_7 = canvas.create_image(
+            199.0,
+            250.0,
+            image=image_image_7
+        )
+
+        button_image_2 = PhotoImage(
+            file=relative_to_assets("button_2.png"))
+        button_2 = Button(
+            image=button_image_2,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: turn_window(14),
+            relief="flat"
+        )
+        button_2.place(
+            x=31.0,
+            y=64.0,
+            width=25.0,
+            height=23.0
+        )
+
+        image_image_8 = PhotoImage(
+            file=relative_to_assets("image_8.png"))
+        image_8 = canvas.create_image(
+            196.0,
+            77.0,
+            image=image_image_8
+        )
+
+        image_image_9 = PhotoImage(
+            file=relative_to_assets("image_9.png"))
+        image_9 = canvas.create_image(
+            196.0,
+            31.0,
+            image=image_image_9
+        )
+    elif window_id == 5:
+                
+        OUTPUT_PATH = Path(__file__).parent
+        ASSETS_PATH = OUTPUT_PATH / Path("./assets/frame5/")
+        
+        canvas = Canvas(
+            window,
+            bg = "#181A20",
+            height = 852,
+            width = 393,
+            bd = 0,
+            highlightthickness = 0,
+            relief = "ridge"
+        )
+
+        canvas.place(x = 0, y = 0)
+        image_image_1 = PhotoImage(
+            file=relative_to_assets("image_1.png"))
+        image_1 = canvas.create_image(
+            196.0,
+            835.0,
+            image=image_image_1
+        )
+
+        button_image_1 = PhotoImage(
+            file=relative_to_assets("button_1.png"))
+        button_1 = Button(
+            image=button_image_1,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_1 clicked"),
+            relief="flat"
+        )
+        button_1.place(
+            x=34.0,
+            y=752.0,
+            width=326.0,
+            height=60.0
+        )
+
+        image_image_2 = PhotoImage(
+            file=relative_to_assets("image_2.png"))
+        image_2 = canvas.create_image(
+            196.0,
+            512.0,
+            image=image_image_2
+        )
+
+        button_image_2 = PhotoImage(
+            file=relative_to_assets("button_2.png"))
+        button_2 = Button(
+            image=button_image_2,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_2 clicked"),
+            relief="flat"
+        )
+        button_2.place(
+            x=203.0,
+            y=416.0,
+            width=160.0,
+            height=47.0
+        )
+
+        button_image_3 = PhotoImage(
+            file=relative_to_assets("button_3.png"))
+        button_3 = Button(
+            image=button_image_3,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_3 clicked"),
+            relief="flat"
+        )
+        button_3.place(
+            x=30.0,
+            y=416.0,
+            width=160.0,
+            height=47.0
+        )
+
+        button_image_4 = PhotoImage(
+            file=relative_to_assets("button_4.png"))
+        button_4 = Button(
+            image=button_image_4,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_4 clicked"),
+            relief="flat"
+        )
+        button_4.place(
+            x=30.0,
+            y=373.0,
+            width=333.0,
+            height=31.0
+        )
+
+        image_image_3 = PhotoImage(
+            file=relative_to_assets("image_3.png"))
+        image_3 = canvas.create_image(
+            196.0,
+            259.0,
+            image=image_image_3
+        )
+
+        image_image_4 = PhotoImage(
+            file=relative_to_assets("image_4.png"))
+        image_4 = canvas.create_image(
+            118.0,
+            260.0,
+            image=image_image_4
+        )
+
+        image_image_5 = PhotoImage(
+            file=relative_to_assets("image_5.png"))
+        image_5 = canvas.create_image(
+            196.0,
+            77.0,
+            image=image_image_5
+        )
+
+        button_image_5 = PhotoImage(
+            file=relative_to_assets("button_5.png"))
+        button_5 = Button(
+            image=button_image_5,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_5 clicked"),
+            relief="flat"
+        )
+        button_5.place(
+            x=31.0,
+            y=64.0,
+            width=23.0,
+            height=21.0
+        )
+
+        image_image_6 = PhotoImage(
+            file=relative_to_assets("image_6.png"))
+        image_6 = canvas.create_image(
+            196.0,
+            31.0,
+            image=image_image_6
+        )
+    
+    elif window_id == 2:
+                
+        OUTPUT_PATH = Path(__file__).parent
+        ASSETS_PATH = OUTPUT_PATH / Path("./assets/frame2/")
+        
+        canvas = Canvas(
+            window,
+            bg = "#181A20",
+            height = 852,
+            width = 393,
+            bd = 0,
+            highlightthickness = 0,
+            relief = "ridge"
+        )
+
+        canvas.place(x = 0, y = 0)
+        image_image_1 = PhotoImage(
+            file=relative_to_assets("image_1.png"))
+        image_1 = canvas.create_image(
+            196.0,
+            835.0,
+            image=image_image_1
+        )
+
+        button_image_1 = PhotoImage(
+            file=relative_to_assets("button_1.png"))
+        button_1 = Button(
+            image=button_image_1,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_1 clicked"),
+            relief="flat"
+        )
+        button_1.place(
+            x=34.0,
+            y=752.0,
+            width=326.0,
+            height=60.0
+        )
+
+        button_image_2 = PhotoImage(
+            file=relative_to_assets("button_2.png"))
+        button_2 = Button(
+            image=button_image_2,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_2 clicked"),
+            relief="flat"
+        )
+        button_2.place(
+            x=203.0,
+            y=416.0,
+            width=160.0,
+            height=47.0
+        )
+
+        image_image_2 = PhotoImage(
+            file=relative_to_assets("image_2.png"))
+        image_2 = canvas.create_image(
+            196.0,
+            512.0,
+            image=image_image_2
+        )
+
+        button_image_3 = PhotoImage(
+            file=relative_to_assets("button_3.png"))
+        button_3 = Button(
+            image=button_image_3,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_3 clicked"),
+            relief="flat"
+        )
+        button_3.place(
+            x=30.0,
+            y=416.0,
+            width=160.0,
+            height=47.0
+        )
+
+        button_image_4 = PhotoImage(
+            file=relative_to_assets("button_4.png"))
+        button_4 = Button(
+            image=button_image_4,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_4 clicked"),
+            relief="flat"
+        )
+        button_4.place(
+            x=30.0,
+            y=373.0,
+            width=333.0,
+            height=31.0
+        )
+
+        image_image_3 = PhotoImage(
+            file=relative_to_assets("image_3.png"))
+        image_3 = canvas.create_image(
+            196.0,
+            259.0,
+            image=image_image_3
+        )
+
+        image_image_4 = PhotoImage(
+            file=relative_to_assets("image_4.png"))
+        image_4 = canvas.create_image(
+            118.0,
+            260.0,
+            image=image_image_4
+        )
+
+        image_image_5 = PhotoImage(
+            file=relative_to_assets("image_5.png"))
+        image_5 = canvas.create_image(
+            196.0,
+            77.0,
+            image=image_image_5
+        )
+
+        button_image_5 = PhotoImage(
+            file=relative_to_assets("button_5.png"))
+        button_5 = Button(
+            image=button_image_5,
+            borderwidth=0,
+            highlightthickness=0,
+            command=lambda: print("button_5 clicked"),
+            relief="flat"
+        )
+        button_5.place(
+            x=31.0,
+            y=64.0,
+            width=24.0,
+            height=22.0
+        )
+
+        image_image_6 = PhotoImage(
+            file=relative_to_assets("image_6.png"))
+        image_6 = canvas.create_image(
+            196.0,
+            31.0,
+            image=image_image_6
+        )
 """main run"""
 
 turn_window(24)
