@@ -18,11 +18,43 @@ import tkinter as tk
 from tkinter import Tk, Canvas, Entry, Text, Button, PhotoImage
 
 standard_password = 1234
-
+is_open = False
+is_send_image = False
 
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path(r"./assets/frame2")
 
+
+
+def update_video():
+    global canvas
+    global image_image_6
+    global client_socket
+    global is_send_image
+    
+    cap = cv2.VideoCapture(1)  # 1번 카메라를 엽니다.
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print(123)
+            break
+        print(143)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+
+        image = Image.fromarray(frame)
+        image_tk = ImageTk.PhotoImage(image=image)
+        
+        if is_send_image and client_socket:
+            send_image(client_socket, frame)
+
+        canvas.itemconfig(image_6, image=image_tk)
+        canvas.image = image_tk  # Keep a reference to avoid garbage collection
+
+
+    cap.release()
 
 
 def socket_server():
@@ -40,14 +72,19 @@ def socket_server():
 def handle_client(client_socket):
     while True:
         message_type = receive_control_message(client_socket)
+        print(message_type)
         if message_type == "%OPEN":
             print("Connection opened")
         elif message_type == "%CLOS":
             print("Connection closed")
-            client_socket.close()
-            return
+
+            #client_socket.close()
+            #return
         elif message_type == "%RAND":
             print("Random message received")
+        elif message_type == "%QQQQ":
+            print("%OPEN" if is_open == True else "%CLOS")
+            send_control_message(client_socket, "%OPEN" if is_open == True else "%CLOS")
         elif message_type == "%IMAG":
             frame = receive_image(client_socket)
             if frame is not None:
@@ -116,21 +153,21 @@ def receive_image(socket_connection):
     return frame
 
 def send_control_message(socket_connection, message):
-    if message in ["%OPEN", "%CLOSE", "%RAND"]:
+    if message in ["%OPEN", "%CLOS", "%RAND"]:
         socket_connection.sendall(message.encode())
     else:
         raise ValueError("Invalid control message. Use '%OPEN', '%CLOSE', or '%RAND'")
 
 def receive_control_message(socket_connection):
-    message_type = socket_connection.recv(4)
-    if message_type in [b"%OPEN", b"%CLOS", b"%RAND"]:
+    message_type = socket_connection.recv(6)
+    print("raw :", message_type)
+    if message_type in [b"%OPEN", b"%CLOS", b"%RAND", b"%QQQQ"]:
         return message_type.decode()
     elif message_type == b"%IMAG":
         return "%IMAG"
     else:
         return None
-
-
+    
 def clear_all():
     global window
 
@@ -140,6 +177,8 @@ def clear_all():
 
 
 def open():
+    global is_open
+    is_open = True
     global canvas, image_image_1, image_1, button_image_1, button_1, button_image_2, button_2
     global button_image_3, button_3, button_image_4, button_4, button_image_5, button_5
     global button_image_6, button_6, button_image_7, button_7, button_image_8, button_8
@@ -434,6 +473,9 @@ def open():
     )
 
 def close():
+    
+    global is_open
+    is_open = False
     global canvas, image_image_1, image_1, button_image_1, button_1, button_image_2, button_2
     global button_image_3, button_3, button_image_4, button_4, button_image_5, button_5
     global button_image_6, button_6, button_image_7, button_7, button_image_8, button_8
@@ -514,12 +556,9 @@ def close():
         image=image_image_5
     )
 
-    image_image_6 = PhotoImage(
-        file=relative_to_assets("image_6.png"))
     image_6 = canvas.create_image(
         197.0,
-        143.0,
-        image=image_image_6
+        143.0
     )
 
     entry_image_1 = PhotoImage(
@@ -796,5 +835,7 @@ window.configure(bg = "#181A20")
 
 close()
 
+threading.Thread(target=socket_server, daemon=True).start()
 window.resizable(False, False)
+threading.Thread(target=update_video, daemon=True).start()
 window.mainloop()
