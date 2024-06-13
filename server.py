@@ -18,6 +18,9 @@ import tkinter as tk
 from tkinter import Tk, Canvas, Entry, Text, Button, PhotoImage
 
 standard_password = 1234
+random_password = 1234
+now_frame = None
+_server_socket = None
 is_open = False
 is_send_image = False
 
@@ -29,7 +32,8 @@ ASSETS_PATH = OUTPUT_PATH / Path(r"./assets/frame2")
 def update_video():
     global canvas
     global image_image_6
-    global client_socket
+    global client_socket, now_frame
+    global _server_socket
     global is_send_image
     
     cap = cv2.VideoCapture(1)  # 1번 카메라를 엽니다.
@@ -37,18 +41,17 @@ def update_video():
     while True:
         ret, frame = cap.read()
         if not ret:
-            print(123)
             break
-        print(143)
+        now_frame = frame
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-
+        print(is_send_image)
 
         image = Image.fromarray(frame)
         image_tk = ImageTk.PhotoImage(image=image)
         
-        if is_send_image and client_socket:
-            send_image(client_socket, frame)
+        if is_send_image and _server_socket:
+            send_image(_server_socket, now_frame)
 
         canvas.itemconfig(image_6, image=image_tk)
         canvas.image = image_tk  # Keep a reference to avoid garbage collection
@@ -58,6 +61,7 @@ def update_video():
 
 
 def socket_server():
+    global _server_socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind(('0.0.0.0', 9999))
     server_socket.listen(5)
@@ -65,30 +69,37 @@ def socket_server():
 
     while True:
         client_socket, addr = server_socket.accept()
+        _server_socket = client_socket
         print(f"Connection from {addr}")
 
         threading.Thread(target=handle_client, args=(client_socket,)).start()
 
 def handle_client(client_socket):
+    global random_password, is_send_image
     while True:
         message_type = receive_control_message(client_socket)
         print(message_type)
         if message_type == "%OPEN":
             print("Connection opened")
+            open()
         elif message_type == "%CLOS":
             print("Connection closed")
+            close()
 
             #client_socket.close()
             #return
         elif message_type == "%RAND":
+            
             print("Random message received")
+            random_password = receive_four_digit_number(_server_socket)
+            print(random_password)
         elif message_type == "%QQQQ":
             print("%OPEN" if is_open == True else "%CLOS")
             send_control_message(client_socket, "%OPEN" if is_open == True else "%CLOS")
         elif message_type == "%IMAG":
-            frame = receive_image(client_socket)
-            if frame is not None:
-                show_image(frame)
+            is_send_image = True
+            #send_control_message(_server_socket, "%IMAG")
+
 
 def show_image(frame):
     image = Image.fromarray(frame)
@@ -96,11 +107,45 @@ def show_image(frame):
     canvas.create_image(0, 0, anchor=tk.NW, image=image_tk)
     canvas.image = image_tk  # Keep a reference to avoid garbage collection
 
-
 def send_image(socket_connection, frame):
-    data = pickle.dumps(frame)
+    """
+    Encodes the image as JPEG and sends it over the socket connection.
+    """
+    _, encoded_image = cv2.imencode('.jpg', frame)
+    data = encoded_image.tobytes()
+    
+    # 메시지 크기를 네트워크 바이트 순서로 패킹
     message_size = struct.pack("L", len(data))
-    socket_connection.sendall(b"%IMAG" + message_size + data)
+    
+    # 제어 메시지와 데이터 전송
+    send_control_message(socket_connection, "%IMAG")
+    socket_connection.sendall(message_size + data)
+
+
+def receive_four_digit_number(sock):
+    """
+    This function receives a 4-digit number from a TCP socket and returns it.
+    
+    :param sock: The socket to receive data from.
+    :return: The 4-digit number received as a string.
+    """
+    try:
+        # Receive data from the socket
+        data = sock.recv(5)  # We expect exactly 4 bytes for a 4-digit number
+        
+        # Decode the bytes to string
+        number = data.decode('utf-8')
+        
+        # Check if the received data is indeed a 4-digit number
+        if len(number) == 4 and number.isdigit():
+            return number
+        else:
+            raise ValueError("Received data is not a valid 4-digit number")
+    
+    except Exception as e:
+        print(f"Error receiving data: {e}")
+        return None
+
 
 def receive_video(socket_connection):
     data = b""
@@ -153,7 +198,7 @@ def receive_image(socket_connection):
     return frame
 
 def send_control_message(socket_connection, message):
-    if message in ["%OPEN", "%CLOS", "%RAND"]:
+    if message in ["%OPEN", "%CLOS", "%RAND", "%IMAG"]:
         socket_connection.sendall(message.encode())
     else:
         raise ValueError("Invalid control message. Use '%OPEN', '%CLOSE', or '%RAND'")
@@ -161,7 +206,7 @@ def send_control_message(socket_connection, message):
 def receive_control_message(socket_connection):
     message_type = socket_connection.recv(6)
     print("raw :", message_type)
-    if message_type in [b"%OPEN", b"%CLOS", b"%RAND", b"%QQQQ"]:
+    if message_type in [b"%OPEN", b"%CLOS", b"%RAND", b"%QQQQ",]:
         return message_type.decode()
     elif message_type == b"%IMAG":
         return "%IMAG"
@@ -792,7 +837,7 @@ def on_click(num):
         entry_1.delete(0,tk.END)
         entry_1.insert(0,"")
     if num == 12:
-        if temp == str(standard_password):
+        if temp == str(standard_password) or temp == str(random_password):
             entry_1.delete(0,tk.END)
             open()
         
