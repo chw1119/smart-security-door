@@ -8,6 +8,7 @@ import sqlite3
 import socket
 import struct
 import pickle
+import os
 import numpy as np
 from PIL import Image, ImageTk
 from pathlib import Path
@@ -30,7 +31,7 @@ def create_database():
         username TEXT NOT NULL UNIQUE,
         password TEXT NOT NULL,
         name TEXT NOT NULL,
-        face_hash TEXT
+        face_hash BLOB
     )
     ''')
     
@@ -84,19 +85,31 @@ def get_user(username):
     
     return user
 
-def update_face_hash(username, face_hash):
+def update_face_hash(username, frame_bytes):
     try:
         conn = sqlite3.connect('user_data.db')
         c = conn.cursor()
+
+        # Save the frame as an image file with a random name
+        image_dir = "image"
+        if not os.path.exists(image_dir):
+            os.makedirs(image_dir)
         
+        random_filename = f"{username}_{random.randint(1000, 9999)}.jpg"
+        image_path = os.path.join(image_dir, random_filename)
+        
+        with open(image_path, "wb") as f:
+            f.write(frame_bytes)
+
+        # Save the image path in the database instead of the bytes
         c.execute('''
         UPDATE users SET face_hash = ? WHERE username = ?
-        ''', (face_hash, username))
-        
+        ''', (random_filename, username))
+
         if c.rowcount == 0:
             print("No user found with the given username.")
         else:
-            print(f"Updated face_hash for user {username}.")
+            print(f"Updated face_hash for user {username} with image {random_filename}.")
         
         conn.commit()
     except sqlite3.Error as e:
@@ -104,12 +117,59 @@ def update_face_hash(username, face_hash):
     finally:
         conn.close()
 
+
+def get_user_face_hash(username):
+    try:
+        conn = sqlite3.connect('user_data.db')
+        c = conn.cursor()
+        
+        c.execute('''
+        SELECT face_hash FROM users WHERE username = ?
+        ''', (username,))
+        
+        row = c.fetchone()
+        if row is None:
+            print("No user found with the given username.")
+            return None
+        else:
+            face_hash = row[0]
+            print(f"Retrieved face_hash for user {username}. Length: {len(face_hash)}")
+            return face_hash
+    except sqlite3.Error as e:
+        print(f"An error occurred: {e}")
+        return None
+    finally:
+        conn.close()
+        
 # 데이터베이스 생성 및 초기화
 create_database()
 
 # 사용자 데이터 삽입
 insert_user('user123', 'password123', 'test', 'None')
 
+def check_sqlite_settings():
+    try:
+        conn = sqlite3.connect('user_data.db')
+        c = conn.cursor()
+        
+        c.execute('PRAGMA max_page_count')
+        max_page_count = c.fetchone()[0]
+        print(f"Max Page Count: {max_page_count}")
+        
+        c.execute('PRAGMA page_size')
+        page_size = c.fetchone()[0]
+        print(f"Page Size: {page_size}")
+        
+        c.execute('PRAGMA cache_size')
+        cache_size = c.fetchone()[0]
+        print(f"Cache Size: {cache_size}")
+        
+    except sqlite3.Error as e:
+        print(f"An error occurred: {e}")
+    finally:
+        conn.close()
+
+check_sqlite_settings()
 
 user = get_user('user123')
 
@@ -152,6 +212,8 @@ def receive_image(socket_connection):
     frame = cv2.imdecode(frame_data, cv2.IMREAD_COLOR)
     
     return frame
+
+
 def show_image(socket_connection):
     """
     Continuously receives and displays image frames using OpenCV.
@@ -165,38 +227,78 @@ def show_image(socket_connection):
             break
     cv2.destroyAllWindows()
 
+
+def send_face_data(socket_connection, username):
+    try:
+        conn = sqlite3.connect('user_data.db')
+        c = conn.cursor()
+        
+        c.execute('''
+        SELECT face_hash FROM users WHERE username = ?
+        ''', (username,))
+        
+        row = c.fetchone()
+        if row is None:
+            print("No user found with the given username.")
+            return None
+        else:
+            image_filename = row[0]
+            image_path = os.path.join("image", image_filename)
+            print(f"Sending face data for user {username} from file {image_filename}.")
+            
+            with open(image_path, "rb") as f:
+                face_data = f.read()
+            
+            # Send the image data
+            message_size = struct.pack("L", len(face_data))
+            send_control_message(socket_connection, "%FDAT")
+            socket_connection.sendall(message_size + face_data)
+            print("Face data sent successfully.")
+    except sqlite3.Error as e:
+        print(f"An error occurred: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+
 def send_random_password(socket_connection, rp):
     """
     Sends a random password to the client via the socket connection.
     """
     socket_connection.sendall(rp.encode('utf-8'))
 
+
 def send_control_message(socket_connection, message):
     """
     Sends a control message to the socket connection.
     """
-    if message in ["%OPEN", "%CLOS", "%RAND", "%QQQQ", "%IMAG"]:
+    if message in ["%OPEN", "%CLOS", "%RAND", "%QQQQ", "%IMAG","%FDAT"]:
         socket_connection.sendall(message.encode())
     else:
         raise ValueError("Invalid control message. Use '%OPEN', '%CLOS', '%RAND', '%QQQQ', or '%IMAG'")
+
+
 
 def receive_control_message(socket_connection):
     """
     Receives a control message from the socket connection.
     """
     message_type = socket_connection.recv(6)
-    if message_type in [b"%OPEN", b"%CLOS", b"%RAND", b"%QQQQ"]:
+    if message_type in [b"%OPEN", b"%CLOS", b"%RAND", b"%QQQQ", b"%FDAT"]:
         return message_type.decode()
     elif message_type == b"%IMAG":
         return "%IMAG"
     else:
         return None
+    
+
 
 def connect_to_server():
     """
     Connects to the server and handles incoming control messages and images.
     """
-    global client_socket, opening
+    global client_socket, opening, now_id
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.connect(('localhost', 9999))
     print('Connected to server')
@@ -214,11 +316,12 @@ def connect_to_server():
         elif message_type == "%IMAG":
             print("Receiving image")
             frame = receive_image(client_socket)
-            print(1)
             if frame is not None:
                 cv2.imshow('Received', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     cv2.destroyAllWindows()
+
+
 """opencv section"""
 
 face_classifier_path = './haarcascade_frontalface_default.xml'
@@ -770,6 +873,8 @@ def turn_window(window_id : int):
 
             if get_user(id) is not None and get_user(id)[2] == password:
                 now_id = id
+                
+                send_face_data(client_socket, now_id)
                 turn_window(14)
             else:
                 msgbox.showwarning("에러", "아이디와 비밀번호가 일치하지 않습니다.")
@@ -1535,26 +1640,24 @@ def turn_window(window_id : int):
 
     elif window_id == 11:
         def update_frame():
-            
             global now_id
-    
-            global image_1
-            global image_2
-            global image_3
-            global image_4
+            global image_5
 
             ret, frame = cap.read()
             if ret:
-                temp = frame
+                # Attempt to extract the face
+                temp = frame.copy()
                 frame = face_extractor(frame)
                 
-                if frame is None:
-                    frame = temp
-                else:
-                    print(frame.data.tobytes())
-                    update_face_hash(now_id, frame.data.tobytes())
+                if frame is not None:
+                    # Convert the extracted face to a format suitable for storage
+                    frame = preprocess_image(frame)
+                    _, buffer = cv2.imencode('.jpg', frame)
+                    face_bytes = buffer.tobytes()
+                    update_face_hash(now_id, face_bytes)
+                    
+                    # Convert the frame back to a displayable format
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
                     img = Image.fromarray(frame)
                     imgtk = ImageTk.PhotoImage(image=img)
                     canvas.itemconfig(image_5, image=imgtk)
@@ -1562,15 +1665,18 @@ def turn_window(window_id : int):
                     msgbox.showinfo("확인", "이미지가 등록 되었습니다.")
                     turn_window(17)
                     return
-                    
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                img = Image.fromarray(frame)
-                imgtk = ImageTk.PhotoImage(image=img)
-                canvas.itemconfig(image_5, image=imgtk)
-                canvas.image = imgtk  # keep a reference
+                # If no face is extracted, use the original frame for display
+                frame = temp
+            
+            # Convert the frame to RGB format for display
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame)
+            imgtk = ImageTk.PhotoImage(image=img)
+            canvas.itemconfig(image_5, image=imgtk)
+            canvas.image = imgtk  # keep a reference
 
-                window.after(50, update_frame)  # Schedule the next frame update
+            window.after(50, update_frame)  # Schedule the next frame update
 
         OUTPUT_PATH = Path(__file__).parent
         ASSETS_PATH = OUTPUT_PATH / Path("./assets/frame11/")
@@ -1646,7 +1752,7 @@ def turn_window(window_id : int):
             copy_to_clipboard(temp)
             msgbox.showinfo("확인", "클립보드에 임시 비밀번호가 저장되었습니다.")
             send_control_message(client_socket, "%RAND")
-            send_rnadom_password(client_socket, str(temp))
+            send_random_password(client_socket, str(temp))
         OUTPUT_PATH = Path(__file__).parent
         ASSETS_PATH = OUTPUT_PATH / Path("./assets/frame8/")
         

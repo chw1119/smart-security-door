@@ -19,19 +19,58 @@ from tkinter import Tk, Canvas, Entry, Text, Button, PhotoImage
 
 standard_password = 1234
 random_password = 1234
+face_data = None
 now_frame = None
 _server_socket = None
 is_open = False
 is_send_image = False
 
+
+# 경로 및 분류기 로드
+face_classifier_path = 'haarcascade_frontalface_default.xml'
+face_classifier = cv2.CascadeClassifier(face_classifier_path)
+
 OUTPUT_PATH = Path(__file__).parent
 ASSETS_PATH = OUTPUT_PATH / Path(r"./assets/frame2")
 
+def preprocess_image(face):
+    face = cv2.resize(face, (300, 300))
+    face = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+    _, face = cv2.threshold(face, 80, 255, cv2.THRESH_BINARY)
+    kernel = np.ones((1, 1), np.uint8)
+    face = cv2.erode(face, kernel, iterations=10)
+    return face
 
+def template_matching(frame, face_image):
+    face_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
+    _, gray_now_frame = face_extractor(frame)
+    if gray_now_frame is not None:
+        gray_now_frame = preprocess_image(gray_now_frame)
+        cv2.imshow("gnf", gray_now_frame)
+        cv2.waitKey(1)
+
+        res = cv2.matchTemplate(gray_now_frame, face_image, cv2.TM_CCOEFF_NORMED)
+        print(res)
+        threshold = 0.5
+        loc = np.where(res >= threshold)
+
+        if len(loc[0]) > 0:
+            return True
+    return False
+    
+
+def face_extractor(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = face_classifier.detectMultiScale(gray, 1.3, 5)
+    if len(faces) == 0: 
+        return None, None
+    x, y, w, h = faces[0]  # <- 첫 번째 감지된 얼굴을 사용을 위한 부분
+    cropped_face = img[y:y+h, x:x+w]
+    return img, cropped_face
 
 def update_video():
     global canvas
-    global image_image_6
+    global image_image_6 ,face_data
     global client_socket, now_frame
     global _server_socket
     global is_send_image
@@ -45,7 +84,11 @@ def update_video():
         now_frame = frame
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        print(is_send_image)
+        if face_data is not None:
+                if template_matching(frame, face_data):
+                    open()
+                else:
+                    print("Face match failed")
 
         image = Image.fromarray(frame)
         image_tk = ImageTk.PhotoImage(image=image)
@@ -59,6 +102,41 @@ def update_video():
 
     cap.release()
 
+def receive_face_data(socket_connection):
+    payload_size = struct.calcsize("L")
+    
+    print("Waiting to receive message size...")
+    packed_msg_size = socket_connection.recv(payload_size)
+    if not packed_msg_size:
+        print("No data received for message size.")
+        return None
+    
+    print("Message size received.")
+    msg_size = struct.unpack("L", packed_msg_size)[0]
+    
+    print(f"Expected data size: {msg_size} bytes")
+    data = b""
+    while len(data) < msg_size:
+        packet = socket_connection.recv(4096)
+        if not packet:
+            print("No packet received.")
+            return None
+        data += packet
+        print(f"Received packet: {len(packet)} bytes, Total received: {len(data)} bytes")
+    
+    print(f"Total received data size: {len(data)} bytes")
+    
+    # Convert the received bytes back to a numpy array
+    np_data = np.frombuffer(data, np.uint8)
+    
+    # Decode numpy array to image
+    face_image = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
+    
+    if face_image is None:
+        print("Failed to decode image")
+    
+    return face_image
+    
 
 def socket_server():
     global _server_socket
@@ -75,7 +153,7 @@ def socket_server():
         threading.Thread(target=handle_client, args=(client_socket,)).start()
 
 def handle_client(client_socket):
-    global random_password, is_send_image
+    global random_password, is_send_image, now_id, face_data 
     while True:
         message_type = receive_control_message(client_socket)
         print(message_type)
@@ -85,20 +163,23 @@ def handle_client(client_socket):
         elif message_type == "%CLOS":
             print("Connection closed")
             close()
-
-            #client_socket.close()
-            #return
         elif message_type == "%RAND":
-            
             print("Random message received")
             random_password = receive_four_digit_number(_server_socket)
             print(random_password)
         elif message_type == "%QQQQ":
-            print("%OPEN" if is_open == True else "%CLOS")
-            send_control_message(client_socket, "%OPEN" if is_open == True else "%CLOS")
+            print("%OPEN" if is_open else "%CLOS")
+            send_control_message(client_socket, "%OPEN" if is_open else "%CLOS")
         elif message_type == "%IMAG":
             is_send_image = True
-            #send_control_message(_server_socket, "%IMAG")
+        elif message_type == "%FDAT":
+            print("Receiving face data")
+            face_data = receive_face_data(client_socket)
+            if face_data is not None:
+                cv2.imshow("Face Data", face_data)
+                cv2.waitKey(1)
+            else:
+                print("Failed to receive valid face data")
 
 
 def show_image(frame):
@@ -206,7 +287,7 @@ def send_control_message(socket_connection, message):
 def receive_control_message(socket_connection):
     message_type = socket_connection.recv(6)
     print("raw :", message_type)
-    if message_type in [b"%OPEN", b"%CLOS", b"%RAND", b"%QQQQ",]:
+    if message_type in [b"%OPEN", b"%CLOS", b"%RAND", b"%QQQQ", b"%FDAT"]:
         return message_type.decode()
     elif message_type == b"%IMAG":
         return "%IMAG"
